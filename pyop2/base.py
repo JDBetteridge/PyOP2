@@ -1567,7 +1567,7 @@ class Dat(DataCarrier, _EmptyDataMixin):
 
     @cached_property
     def _wrapper_cache_key_(self):
-        return (type(self), self.dtype, self._dataset._wrapper_cache_key_)
+        return (type(self), self.dtype, self._dataset._wrapper_cache_key_, self.pack)
 
     @validate_in(('access', _modes, ModeValueError))
     def __call__(self, access, path=None):
