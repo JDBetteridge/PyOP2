@@ -293,6 +293,20 @@ class Product(Scalar):
         return a.dtype
 
 
+class Divide(Scalar):
+    __slots__ = ("children", )
+
+    def __init__(self, a, b):
+        assert not a.shape
+        assert not b.shape
+        self.children = a, b
+
+    @cached_property
+    def dtype(self):
+        a, b = self.children
+        return a.dtype
+
+
 class Indexed(Scalar):
     __slots__ = ("children", )
 

@@ -7,7 +7,7 @@ from pyop2.codegen.representation import (Index, FixedIndex, RuntimeIndex,
                                           LogicalAnd, Comparison, DummyInstruction,
                                           Argument, Literal, NamedLiteral,
                                           Materialise, Accumulate, FunctionCall, When,
-                                          Symbol, Zero, Sum, Min, Max, Product)
+                                          Symbol, Zero, Sum, Min, Max, Product, Divide)
 from pyop2.codegen.representation import (PackInst, UnpackInst, KernelInst)
 
 from pyop2.utils import cached_property
@@ -80,7 +80,7 @@ class Map(object):
                     k = Index(f.extent)
                 else:
                     k = Index(1)
-                offset = Sum(Sum(layer, Product(Literal(numpy.int32(-1)), bottom_layer)), k)
+                offset = Sum(Sum(layer, Product(Literal(numpy.int32(-1), casting=False), bottom_layer)), k)
                 offset = Product(offset, Indexed(self.offset, (j,)))
                 self.prefetch[key] = Materialise(PackInst(), Sum(base, offset), MultiIndex(k, j))
 
@@ -241,6 +241,81 @@ class DatPack(Pack):
                 yield acc
             else:
                 yield When(mask, acc)
+
+
+class ExtrudedCoordsPack(DatPack):
+    def _rvalue(self, multiindex, loop_indices=None):
+        """Returns indexed Dat and masking condition to apply to reads/writes.
+
+        If the masking condition is None, no mask is applied,
+        otherwise the pack/unpack will be wrapped in When(mask, expr).
+        This is used for the case where maps might have negative entries.
+        """
+        f, i, *j = multiindex
+        n, layer = self.pick_loop_indices(*loop_indices)
+        assert layer is not None
+        assert len(j) == 1
+        if self.view_index is not None:
+            j = tuple(j) + tuple(FixedIndex(vi) for vi in self.view_index)
+
+        i_ = Index(i.extent)
+        f_ = Index(f.extent)
+        j_ = tuple(Index(j__.extent) for j__ in j)
+        map_, (f_, i_) = self.map_.indexed((n, i_, f_), layer=None)
+
+        base = Indexed(self.outer, MultiIndex(map_, *j_))
+        val = Materialise(PackInst(), base, MultiIndex(f_, i_, *j_))
+        z = FixedIndex(j[0].extent - 1)
+
+        bottom, top = self.map_.layer_bounds
+        nlevel = Sum(top, Product(Literal(numpy.int32(-1), casting=False), bottom))
+
+        bottom = Divide(layer, nlevel)
+        top = Divide(Sum(layer, Literal(numpy.int32(1), casting=False)), nlevel)
+        nvals = i.extent
+        expressions = []
+        f_ = Index(f.extent)
+
+        for g in range(nvals):
+            if g % 2 == 0:
+                len_ = Sum(Indexed(val, MultiIndex(f_, FixedIndex(g+1), z)),
+                           Product(Literal(numpy.int32(-1), casting=False),
+                                   Indexed(val, MultiIndex(f_, FixedIndex(g), z))))
+            multiindex = MultiIndex(f_, FixedIndex(g), z)
+            if g % 2 == 0:
+                off = bottom
+            else:
+                off = top
+            expressions.append(Product(len_, off))
+            expressions.append(multiindex)
+
+        return Materialise(PackInst(), Indexed(val, MultiIndex(f, i, *j)), MultiIndex(f, i, *j), *expressions)
+
+    def emit_unpack_instruction(self, *, loop_indices=None):
+        if self.access is not READ:
+            raise ValueError("Not for implicit coordinates")
+        else:
+            yield None
+
+    def pack(self, loop_indices=None):
+        assert self.map_ is not None
+
+        if hasattr(self, "_pack"):
+            return self._pack
+
+        if self.interior_horizontal:
+            shape = (2, )
+        else:
+            shape = (1, )
+
+        shape = shape + self.map_.shape[1:]
+        if self.view_index is None:
+            shape = shape + self.outer.shape[1:]
+
+        assert self.access is READ
+        multiindex = MultiIndex(*(Index(e) for e in shape))
+        self._pack = self._rvalue(multiindex, loop_indices=loop_indices)
+        return self._pack
 
 
 class MixedDatPack(Pack):
@@ -516,20 +591,20 @@ class WrapperBuilder(object):
         if self.iteration_region == ON_BOTTOM:
             start = Indexed(self._layers_array, (self._layer_index, FixedIndex(0)))
             end = Sum(Indexed(self._layers_array, (self._layer_index, FixedIndex(0))),
-                      Literal(IntType.type(1)))
+                      Literal(IntType.type(1), casting=False))
         elif self.iteration_region == ON_TOP:
             start = Sum(Indexed(self._layers_array, (self._layer_index, FixedIndex(1))),
-                        Literal(IntType.type(-2)))
+                        Literal(IntType.type(-2), casting=False))
             end = Sum(Indexed(self._layers_array, (self._layer_index, FixedIndex(1))),
-                      Literal(IntType.type(-1)))
+                      Literal(IntType.type(-1), casting=False))
         elif self.iteration_region == ON_INTERIOR_FACETS:
             start = Indexed(self._layers_array, (self._layer_index, FixedIndex(0)))
             end = Sum(Indexed(self._layers_array, (self._layer_index, FixedIndex(1))),
-                      Literal(IntType.type(-2)))
+                      Literal(IntType.type(-2), casting=False))
         elif self.iteration_region == ALL:
             start = Indexed(self._layers_array, (self._layer_index, FixedIndex(0)))
             end = Sum(Indexed(self._layers_array, (self._layer_index, FixedIndex(1))),
-                      Literal(IntType.type(-1)))
+                      Literal(IntType.type(-1), casting=False))
         else:
             raise ValueError("Unknown iteration region")
         return (Materialise(PackInst(), start, MultiIndex()),

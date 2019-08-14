@@ -28,7 +28,7 @@ from pyop2.codegen.representation import (Index, FixedIndex, RuntimeIndex,
                                           LogicalNot, LogicalAnd, LogicalOr,
                                           Materialise, Accumulate, FunctionCall, When,
                                           Argument, Variable, Literal, NamedLiteral,
-                                          Symbol, Zero, Sum, Min, Max, Product)
+                                          Symbol, Zero, Sum, Min, Max, Product, Divide)
 from pyop2.codegen.representation import (PackInst, UnpackInst, KernelInst)
 from pytools import ImmutableRecord
 
@@ -760,6 +760,11 @@ def expression_binop(expr, parameters):
             LogicalAnd: pym.LogicalAnd,
             BitwiseOr: pym.BitwiseOr,
             BitwiseAnd: pym.BitwiseAnd}[type(expr)](children)
+
+
+@expression.register(Divide)
+def expression_divide(expr, parameters):
+    return pym.Quotient(*(expression(c, parameters) for c in expr.children))
 
 
 @expression.register(Min)
