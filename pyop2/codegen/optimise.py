@@ -84,7 +84,8 @@ def index_merger(instructions, cache=None):
                 appeared[i] = ni
                 subst.append((i, ni))
 
-    index_replacer.subst = dict(subst)
+    # TODO: the index merger has issues
+    index_replacer.subst = {} # dict(subst)
     return index_replacer
 
 
