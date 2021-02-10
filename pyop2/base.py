@@ -1003,6 +1003,7 @@ class GlobalDataSet(DataSet):
 
         self._global = global_
         self._globalset = GlobalSet(comm=self.comm)
+        self._name = "gdset_#x%x" % id(self)
 
     @classmethod
     def _cache_key(cls, *args):
@@ -1337,12 +1338,15 @@ class Dat(DataCarrier, _EmptyDataMixin):
     multiplication / division by a scalar.
     """
 
+    _zero_kernels = {}
+    """Class-level cache for zero kernels."""
+
+    _modes = [READ, WRITE, RW, INC, MIN, MAX]
+
     @cached_property
     def pack(self):
         from pyop2.codegen.builder import DatPack
         return DatPack
-
-    _modes = [READ, WRITE, RW, INC, MIN, MAX]
 
     @validate_type(('dataset', (DataCarrier, DataSet, Set), DataSetTypeError),
                    ('name', str, NameTypeError))
@@ -1545,18 +1549,22 @@ class Dat(DataCarrier, _EmptyDataMixin):
         loop = loops.get(iterset, None)
 
         if loop is None:
-            import islpy as isl
-            import pymbolic.primitives as p
+            try:
+                knl = self._zero_kernels[(self.dtype, self.cdim)]
+            except KeyError:
+                import islpy as isl
+                import pymbolic.primitives as p
 
-            inames = isl.make_zero_and_vars(["i"])
-            domain = (inames[0].le_set(inames["i"])) & (inames["i"].lt_set(inames[0] + self.cdim))
-            x = p.Variable("dat")
-            i = p.Variable("i")
-            insn = loopy.Assignment(x.index(i), 0, within_inames=frozenset(["i"]))
-            data = loopy.GlobalArg("dat", dtype=self.dtype, shape=(self.cdim,))
-            knl = loopy.make_function([domain], [insn], [data], name="zero")
+                inames = isl.make_zero_and_vars(["i"])
+                domain = (inames[0].le_set(inames["i"])) & (inames["i"].lt_set(inames[0] + self.cdim))
+                x = p.Variable("dat")
+                i = p.Variable("i")
+                insn = loopy.Assignment(x.index(i), 0, within_inames=frozenset(["i"]))
+                data = loopy.GlobalArg("dat", dtype=self.dtype, shape=(self.cdim,))
+                knl = loopy.make_function([domain], [insn], [data], name="zero")
 
-            knl = _make_object('Kernel', knl, 'zero')
+                knl = _make_object('Kernel', knl, 'zero')
+                self._zero_kernels[(self.dtype, self.cdim)] = knl
             loop = _make_object('ParLoop', knl,
                                 iterset,
                                 self(WRITE))
@@ -3324,8 +3332,8 @@ class Kernel(Cached):
             code = code.gencode()
         if isinstance(code, loopy.LoopKernel):
             from loopy.tools import LoopyKeyBuilder
-            from pytools.persistent_dict import new_hash
-            key_hash = new_hash()
+            from hashlib import sha256
+            key_hash = sha256()
             code.update_persistent_hash(key_hash, LoopyKeyBuilder())
             code = key_hash.hexdigest()
         hashee = (str(code) + name + str(sorted(opts.items())) + str(include_dirs)
